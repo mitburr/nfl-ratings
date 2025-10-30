@@ -20,7 +20,25 @@ class NFLDataIngestion:
         teams_df.columns = ['team_id', 'team_name', 'conference', 'division']
         teams_df = teams_df.drop_duplicates(subset=['team_id'])
         
-        self.db.insert_dataframe(teams_df, 'teams', if_exists='replace')
+        # Use upsert logic - update if exists, insert if not
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        
+        for _, row in teams_df.iterrows():
+            cursor.execute("""
+                INSERT INTO teams (team_id, team_name, conference, division)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (team_id) 
+                DO UPDATE SET 
+                    team_name = EXCLUDED.team_name,
+                    conference = EXCLUDED.conference,
+                    division = EXCLUDED.division
+            """, (row['team_id'], row['team_name'], row['conference'], row['division']))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
         print(f"Loaded {len(teams_df)} teams")
         return teams_df
     
@@ -50,7 +68,29 @@ class NFLDataIngestion:
             'stadium', 'roof', 'surface', 'temp', 'wind'
         ]
         
-        self.db.insert_dataframe(games_df, 'games', if_exists='append')
+        # Use upsert logic - update if exists, insert if not
+        conn = self.db.get_connection()
+        cursor = conn.cursor()
+        
+        for _, row in games_df.iterrows():
+            cursor.execute("""
+                INSERT INTO games (
+                    game_id, season, week, game_type, game_date,
+                    home_team, away_team, home_score, away_score,
+                    stadium, roof, surface, temp, wind
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (game_id) 
+                DO UPDATE SET
+                    home_score = EXCLUDED.home_score,
+                    away_score = EXCLUDED.away_score,
+                    updated_at = CURRENT_TIMESTAMP
+            """, tuple(row))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
         print(f"Loaded {len(games_df)} games")
         return games_df
     
@@ -83,7 +123,11 @@ class NFLDataIngestion:
         # Remove plays with missing teams (kickoffs, etc.)
         plays_df = plays_df.dropna(subset=['posteam', 'defteam'])
         
-        self.db.insert_dataframe(plays_df, 'plays', if_exists='append')
+        # Use bulk insert with ON CONFLICT DO NOTHING (plays shouldn't change)
+        # This is more efficient than row-by-row for large datasets
+        self.db.insert_dataframe(plays_df, 'plays', if_exists='append', 
+                                 method='multi')  # Faster bulk insert
+        
         print(f"Loaded {len(plays_df)} plays")
         return plays_df
     
