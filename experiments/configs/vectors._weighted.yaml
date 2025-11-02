@@ -1,0 +1,16 @@
+name: "vectors_weighted_25"
+model_type: "vectors"
+parameters:
+  elo_config:
+    k_factor: 20
+    home_advantage: 40
+    initial_rating: 1500
+  vector_config:
+    boost: 0.60
+    weight: 0.35
+    blend_prior: true
+    prior_weight: 0.25
+metrics:
+  - accuracy
+  - log_loss
+  - brier_score

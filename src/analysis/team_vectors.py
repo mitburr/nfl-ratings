@@ -132,7 +132,7 @@ def display_team_vectors(season=2024, top_n=10):
 
 if __name__ == "__main__":
     # Example usage
-    vectors = display_team_vectors(2024)
+    vectors = display_team_vectors(2023)
     
     # Example matchup analysis
     print("\n" + "="*70)

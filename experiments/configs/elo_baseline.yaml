@@ -1,0 +1,11 @@
+name: "elo_baseline"
+model_type: "elo"
+parameters:
+  k_factor: 20
+  home_advantage: 40
+  initial_rating: 1500
+  mov_multiplier: true
+metrics:
+  - accuracy
+  - log_loss
+  - brier_score

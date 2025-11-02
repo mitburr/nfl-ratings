@@ -1,78 +1,119 @@
 version: '3'
 
 vars:
-  K_FACTOR: 20
-  HOME_ADV: 40
+  VENV_ACTIVATE: "source venv/bin/activate"
+  PROJECT_DIR: "~/Repos/nfl-ratings"
 
 tasks:
-  # Data loading tasks
+  # ========== Data Loading ==========
   load:
     desc: "Load historical NFL data (usage: task load -- 2022 2024)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.load_historical_data {{.CLI_ARGS}}"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.load_historical_data {{.CLI_ARGS}}"
 
   load-current:
     desc: "Load current season (2025)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.load_historical_data 2025"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.load_historical_data 2025"
 
-  # Analysis tasks
-  analyze:
-    desc: "Run full analysis for a season (usage: task analyze -- 2024 or just task analyze)"
+  # ========== Experiments ==========
+  experiment:
+    desc: "Run experiment (usage: task experiment -- --config configs/elo_baseline.yaml --seasons 2024)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.run_full_analysis --season {{.CLI_ARGS | default "2025"}} --k {{.K_FACTOR}} --home {{.HOME_ADV}}"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m experiments.runner {{.CLI_ARGS}}"
 
-  # Tuning tasks
-  tune:
-    desc: "Tune parameters using historical data"
+  compare:
+    desc: "Compare models (usage: task compare -- --compare configs/elo*.yaml --seasons 2024)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.tune_parameters"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m experiments.runner --compare experiments/configs/*.yaml --seasons {{.CLI_ARGS | default "2024"}}"
 
-  # Visualization tasks
-  visualize:
-    desc: "Generate visualizations (usage: task visualize -- 2024)"
+  sweep:
+    desc: "Run parameter sweep (usage: task sweep -- k_factor=25 home_advantage=50)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.visualize --season {{.CLI_ARGS | default "2025"}} --k {{.K_FACTOR}} --home {{.HOME_ADV}}"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m experiments.runner --config experiments/configs/elo_baseline.yaml --seasons 2024 --override {{.CLI_ARGS}}"
 
-  # Prediction tasks
-  predict:
-    desc: "Predict game outcome (usage: task predict MIN DET)"
+  # ========== Predictions ==========
+  predict-week:
+    desc: "Predict week (usage: task predict-week -- 9 or task predict-week -- 9 --config configs/vectors_weighted.yaml)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.predict_game --predict {{.CLI_ARGS}}"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.predict_week --week {{.CLI_ARGS}}"
 
-  predict-interactive:
-    desc: "Interactive prediction mode"
-    aliases: [predict-i]
+  predict-elo:
+    desc: "Predict week with Elo only (usage: task predict-elo -- 9)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.predict_game --interactive"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.predict_week --week {{.CLI_ARGS}} --config experiments/configs/elo_baseline.yaml"
 
-  rankings:
-    desc: "Show current rankings"
+  predict-vectors:
+    desc: "Predict week with vector-enhanced model (usage: task predict-vectors -- 9)"
     cmds:
-      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.predict_game --rankings"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.predict_week --week {{.CLI_ARGS}} --config experiments/configs/vectors_weighted.yaml"
 
-  # Database tasks
+  # ========== Analysis ==========
+  analyze-vectors:
+    desc: "Deep dive vector analysis"
+    cmds:
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.analyze_vectors"
+
+  history:
+    desc: "View experiment history"
+    cmds:
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -c 'from experiments.tracker import ExperimentTracker; t = ExperimentTracker(); print(t.get_experiments())'"
+
+  # ========== Database ==========
   db-check:
-    desc: "Check database connection and game counts"
+    desc: "Check database status"
     cmds:
-      - psql -U postgres -d nfl_stats -c "SELECT season, COUNT(*) as games FROM games GROUP BY season ORDER BY season;"
+      - psql -U postgres -d nfl_stats -c "SELECT season, game_type, COUNT(*) FROM games GROUP BY season, game_type ORDER BY season, game_type;"
 
-  # Utility tasks
-  clean:
-    desc: "Clean generated files"
+  db-stats:
+    desc: "Show database statistics"
     cmds:
-      - rm -rf ~/Repos/nfl-ratings/data/plots/*.png
-      - rm -rf ~/Repos/nfl-ratings/data/processed/*.csv
-      - rm -rf ~/Repos/nfl-ratings/data/processed/*.txt
-      - echo "Cleaned generated files"
+      - psql -U postgres -d nfl_stats -c "SELECT 'games' as table_name, COUNT(*) FROM games UNION ALL SELECT 'plays', COUNT(*) FROM plays UNION ALL SELECT 'teams', COUNT(*) FROM teams;"
+
+  # ========== Utilities ==========
+  clean:
+    desc: "Clean generated files (keeps experiment results)"
+    cmds:
+      - rm -rf {{.PROJECT_DIR}}/data/plots/*.png
+      - rm -rf {{.PROJECT_DIR}}/__pycache__ {{.PROJECT_DIR}}/**/__pycache__
+      - echo "Cleaned temporary files"
+
+  clean-all:
+    desc: "Clean all generated files including experiment results"
+    cmds:
+      - rm -rf {{.PROJECT_DIR}}/data/plots/*.png
+      - rm -rf {{.PROJECT_DIR}}/data/processed/*.csv
+      - rm -rf {{.PROJECT_DIR}}/experiments/results/*
+      - rm -rf {{.PROJECT_DIR}}/logs/*
+      - rm -rf {{.PROJECT_DIR}}/__pycache__ {{.PROJECT_DIR}}/**/__pycache__
+      - echo "Cleaned all generated files"
+
+  test:
+    desc: "Run tests"
+    cmds:
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && pytest tests/"
+
+  lint:
+    desc: "Run linters (black, isort, flake8)"
+    cmds:
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && black src/ experiments/ scripts/ --line-length 100"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && isort src/ experiments/ scripts/"
+      - bash -c "cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && flake8 src/ experiments/ scripts/ --max-line-length 100"
+
+  # ========== Quick Actions ==========
+  quick-test:
+    desc: "Quick test on 2024 season"
+    cmds:
+      - task: experiment
+        vars: { CLI_ARGS: "--config experiments/configs/elo_baseline.yaml --seasons 2024" }
+
+  weekly:
+    desc: "Weekly workflow: load data, predict next week"
+    cmds:
+      - task: load-current
+      - bash -c "WEEK=$(($(date +%V) % 18 + 1)); cd {{.PROJECT_DIR}} && {{.VENV_ACTIVATE}} && python -m scripts.predict_week --week $WEEK"
 
   help:
-    desc: "Show available tasks"
+    desc: "Show this help"
     cmds:
       - task --list
-
-  today:
-    desc: "Predict today's games and show rankings"
-    cmds:
-      - task: rankings
-      - task: predict-interactive

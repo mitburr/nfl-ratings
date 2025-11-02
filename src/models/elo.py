@@ -1,151 +1,117 @@
-"""Elo rating system for NFL teams."""
-import pandas as pd
+"""Elo rating predictor for NFL games."""
+
+import logging
+from typing import Dict, Optional
+
 import numpy as np
+import pandas as pd
 
-# Fix for numpy 2.x compatibility with psycopg2
-np.set_printoptions(legacy="1.25")
-
+from src.models.base import BasePredictor
 from src.database.db_manager import DatabaseManager
+from src.utils.cache import EloCache
+
+logger = logging.getLogger(__name__)
 
 
-class EloRatingSystem:
-    """Calculate and track Elo ratings for NFL teams."""
+class EloPredictor(BasePredictor):
+    """Elo-based prediction system with caching support."""
     
-    def __init__(self, k_factor=20, home_advantage=65, initial_rating=1500, 
-                 mov_multiplier=True):
-        """
-        Initialize Elo rating system.
+    def __init__(self, config: Dict):
+        """Initialize Elo predictor.
         
         Args:
-            k_factor: How much ratings change per game (default 20)
-            home_advantage: Points added to home team's rating (default 65)
-            initial_rating: Starting rating for all teams (default 1500)
-            mov_multiplier: Whether to scale by margin of victory (default True)
+            config: Dictionary with keys:
+                - k_factor: Rating change multiplier (default: 20)
+                - home_advantage: Points for home team (default: 40)
+                - initial_rating: Starting rating (default: 1500)
+                - mov_multiplier: Scale by margin of victory (default: True)
         """
-        self.k = k_factor
-        self.home_advantage = home_advantage
-        self.initial_rating = initial_rating
-        self.mov_multiplier = mov_multiplier
-        self.db = DatabaseManager()
+        super().__init__(config)
+        self.k_factor = config.get('k_factor', 20)
+        self.home_advantage = config.get('home_advantage', 40)
+        self.initial_rating = config.get('initial_rating', 1500)
+        self.mov_multiplier = config.get('mov_multiplier', True)
         
-        # Current ratings (team_id -> rating)
         self.ratings = {}
-        
-        # History for tracking (list of dicts)
         self.history = []
+        self.db = DatabaseManager()
+        self.cache = EloCache()
     
-    def get_rating(self, team):
-        """Get current rating for a team, initialize if new."""
+    def get_rating(self, team: str) -> float:
+        """Get current rating for team, initialize if new."""
         if team not in self.ratings:
             self.ratings[team] = self.initial_rating
         return self.ratings[team]
     
-    def expected_score(self, rating_a, rating_b):
-        """
-        Calculate expected win probability for team A vs team B.
-        
-        Uses standard Elo formula: E = 1 / (1 + 10^((Rb - Ra) / 400))
-        """
+    def expected_score(self, rating_a: float, rating_b: float) -> float:
+        """Calculate expected win probability for team A vs B."""
         return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
     
-    def margin_of_victory_multiplier(self, point_diff, winning_rating, losing_rating):
-        """
-        Calculate margin of victory multiplier.
-        
-        Larger wins matter more, but diminishing returns.
-        Also scales based on expected outcome - bigger upsets = bigger changes.
-        """
+    def margin_of_victory_multiplier(
+        self, 
+        point_diff: int, 
+        winning_rating: float, 
+        losing_rating: float
+    ) -> float:
+        """Calculate MOV multiplier for rating changes."""
         if not self.mov_multiplier:
             return 1.0
         
-        # Base multiplier from point differential (log scale for diminishing returns)
         mov = np.log(abs(point_diff) + 1)
-        
-        # Calculate rating difference (absolute value - we just care about magnitude)
         rating_diff = abs(winning_rating - losing_rating)
-        
-        # Scale by expected outcome - closer games (small rating diff) get higher multiplier
-        # This formula gives ~1.0 for evenly matched teams, up to ~2.5 for big upsets
         multiplier = mov * (2.2 / ((rating_diff / 25.0) + 2.2))
         
         return max(1.0, multiplier)
     
-    def update_ratings(self, home_team, away_team, home_score, away_score, 
-                       week, season, game_id=None, debug_team=None):
-        """
-        Update ratings after a game.
-        
-        Args:
-            debug_team: Team to log detailed info for (e.g., 'MIA')
-        
-        Returns: dict with game analysis
-        """
-        # Get current ratings
+    def update_ratings(
+        self,
+        home_team: str,
+        away_team: str,
+        home_score: int,
+        away_score: int,
+        week: int,
+        season: int,
+        game_id: Optional[str] = None
+    ) -> Dict:
+        """Update ratings after game completion."""
         home_rating = self.get_rating(home_team)
         away_rating = self.get_rating(away_team)
         
-        # Debug logging
-        if debug_team and (home_team == debug_team or away_team == debug_team):
-            print(f"\n{'='*60}")
-            print(f"Week {week}: {away_team} @ {home_team} ({away_score}-{home_score})")
-            print(f"Before: {home_team}={home_rating:.1f}, {away_team}={away_rating:.1f}")
-        
-        # Calculate expected outcome (with home advantage)
+        # Expected outcome
         expected_home = self.expected_score(
             home_rating + self.home_advantage,
             away_rating
         )
-        expected_away = 1 - expected_home
         
-        # Actual result (1 = win, 0 = loss, 0.5 = tie)
+        # Actual result
         if home_score > away_score:
             actual_home = 1.0
-            actual_away = 0.0
-            winner = home_team
-            loser = away_team
             winner_rating = home_rating
             loser_rating = away_rating
         elif away_score > home_score:
             actual_home = 0.0
-            actual_away = 1.0
-            winner = away_team
-            loser = home_team
             winner_rating = away_rating
             loser_rating = home_rating
         else:
             actual_home = 0.5
-            actual_away = 0.5
-            winner = None
-            loser = None
             winner_rating = home_rating
             loser_rating = away_rating
         
-        # Calculate margin of victory multiplier
+        # MOV multiplier
         point_diff = abs(home_score - away_score)
         mov_mult = self.margin_of_victory_multiplier(
             point_diff, winner_rating, loser_rating
-        ) if winner else 1.0
+        ) if actual_home != 0.5 else 1.0
         
-        # Calculate rating changes
-        home_change = self.k * mov_mult * (actual_home - expected_home)
-        away_change = self.k * mov_mult * (actual_away - expected_away)
+        # Rating changes
+        home_change = self.k_factor * mov_mult * (actual_home - expected_home)
+        away_change = self.k_factor * mov_mult * ((1 - actual_home) - (1 - expected_home))
         
-        # Update ratings
-        new_home_rating = home_rating + home_change
-        new_away_rating = away_rating + away_change
+        # Update
+        self.ratings[home_team] = home_rating + home_change
+        self.ratings[away_team] = away_rating + away_change
         
-        self.ratings[home_team] = new_home_rating
-        self.ratings[away_team] = new_away_rating
-        
-        # Debug logging
-        if debug_team and (home_team == debug_team or away_team == debug_team):
-            print(f"Expected: {home_team}={expected_home:.1%}, {away_team}={expected_away:.1%}")
-            print(f"Actual: {home_team} {'WON' if home_score > away_score else 'LOST'} {home_score}-{away_score}")
-            print(f"MOV Multiplier: {mov_mult:.2f}")
-            print(f"Changes: {home_team}={home_change:+.1f}, {away_team}={away_change:+.1f}")
-            print(f"After: {home_team}={new_home_rating:.1f}, {away_team}={new_away_rating:.1f}")
-        
-        # Record in history
+        # Record
         game_info = {
             'game_id': game_id,
             'season': season,
@@ -156,42 +122,46 @@ class EloRatingSystem:
             'away_score': away_score,
             'home_rating_before': home_rating,
             'away_rating_before': away_rating,
-            'home_rating_after': new_home_rating,
-            'away_rating_after': new_away_rating,
-            'home_change': home_change,
-            'away_change': away_change,
-            'expected_home_win_prob': expected_home,
-            'point_diff': point_diff,
-            'mov_multiplier': mov_mult
+            'home_rating_after': self.ratings[home_team],
+            'away_rating_after': self.ratings[away_team],
+            'expected_home_win_prob': expected_home
         }
         self.history.append(game_info)
         
         return game_info
     
-    def calculate_season(self, season, through_week=None, save_to_db=True, debug_team=None):
-        """
-        Calculate Elo ratings for a season, optionally through a specific week.
-        """
-        print(f"Calculating Elo ratings for {season} season...")
-        if through_week:
-            print(f"Limiting to games through Week {through_week}")
-
-        query = """
-            SELECT game_id, season, week, game_date,
-                home_team, away_team, home_score, away_score
-            FROM games
-            WHERE season = %s AND home_score IS NOT NULL
-            {}
-            ORDER BY week, game_date
-        """.format("AND week <= %s" if through_week else "")
-
+    def fit(self, season: int, through_week: Optional[int] = None):
+        """Calculate Elo ratings through specified week."""
+        # Check cache first
+        cached = self.cache.get(season, through_week, self.config)
+        if cached is not None:
+            logger.info(f"Loaded Elo cache for {season} week {through_week}")
+            self.ratings = cached['ratings']
+            self.history = cached['history']
+            self.is_fitted = True
+            return self
+        
+        logger.info(f"Calculating Elo for {season} through week {through_week}")
+        
+        # Load games
+        week_filter = "AND week <= %s" if through_week else ""
         params = (season, through_week) if through_week else (season,)
+        
+        query = f"""
+            SELECT game_id, season, week, game_date,
+                   home_team, away_team, home_score, away_score
+            FROM games
+            WHERE season = %s AND home_score IS NOT NULL {week_filter}
+            ORDER BY week, game_date
+        """
+        
         games = self.db.query_to_dataframe(query, params=params)
         
         if len(games) == 0:
-            print(f"No completed games found for {season} (through_week={through_week})")
-            return
-
+            logger.warning(f"No completed games found for {season} through week {through_week}")
+            return self
+        
+        # Process games
         for _, game in games.iterrows():
             self.update_ratings(
                 game['home_team'],
@@ -200,83 +170,25 @@ class EloRatingSystem:
                 game['away_score'],
                 game['week'],
                 game['season'],
-                game['game_id'],
-                debug_team=debug_team
+                game['game_id']
             )
         
-        if save_to_db:
-            self.save_ratings_to_db(season)
-
-        print(f"✓ Processed {len(games)} games (through_week={through_week})")
-        print(f"✓ Rated {len(self.ratings)} teams")
-
+        # Cache results
+        self.cache.save(season, through_week, self.config, {
+            'ratings': self.ratings.copy(),
+            'history': self.history.copy()
+        })
+        
+        self.is_fitted = True
+        logger.info(f"Processed {len(games)} games, rated {len(self.ratings)} teams")
+        
+        return self
     
-    def save_ratings_to_db(self, season):
-        """Save current ratings to database."""
-        # Get the latest week from history
-        if not self.history:
-            return
+    def predict(self, home_team: str, away_team: str) -> Dict:
+        """Predict game outcome using current Elo ratings."""
+        if not self.is_fitted:
+            logger.warning("Model not fitted, using default ratings")
         
-        latest_week = max(h['week'] for h in self.history)
-        
-        # Prepare data for insertion
-        ratings_data = []
-        for team_id, rating in self.ratings.items():
-            games_played = sum(
-                1 for h in self.history 
-                if h['home_team'] == team_id or h['away_team'] == team_id
-            )
-            # Convert numpy types to Python native types
-            ratings_data.append((
-                team_id, 
-                int(season), 
-                int(latest_week), 
-                float(rating),  # Convert numpy float to Python float
-                int(games_played)
-            ))
-        
-        # Insert using upsert
-        conn = self.db.get_connection()
-        cursor = conn.cursor()
-        
-        for data in ratings_data:
-            cursor.execute("""
-                INSERT INTO elo_ratings (team_id, season, week, rating, games_played)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (team_id, season, week)
-                DO UPDATE SET
-                    rating = EXCLUDED.rating,
-                    games_played = EXCLUDED.games_played
-            """, data)
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        print(f"✓ Saved ratings to database (season {season}, week {latest_week})")
-    
-    def get_rankings(self):
-        """Get current rankings as a DataFrame."""
-        rankings = pd.DataFrame([
-            {
-                'team': team,
-                'rating': rating,
-                'rank': 0  # Will be set after sorting
-            }
-            for team, rating in self.ratings.items()
-        ])
-        
-        rankings = rankings.sort_values('rating', ascending=False).reset_index(drop=True)
-        rankings['rank'] = range(1, len(rankings) + 1)
-        
-        return rankings[['rank', 'team', 'rating']]
-    
-    def predict_game(self, home_team, away_team):
-        """
-        Predict the outcome of a game.
-        
-        Returns: dict with prediction details
-        """
         home_rating = self.get_rating(home_team)
         away_rating = self.get_rating(away_team)
         
@@ -285,85 +197,41 @@ class EloRatingSystem:
             away_rating
         )
         
+        spread = (home_rating - away_rating + self.home_advantage) / 25
+        confidence = abs(home_win_prob - 0.5) * 2
+        
         return {
-            'home_team': home_team,
-            'away_team': away_team,
-            'home_rating': home_rating,
-            'away_rating': away_rating,
-            'home_win_probability': home_win_prob,
-            'away_win_probability': 1 - home_win_prob,
-            'favorite': home_team if home_win_prob > 0.5 else away_team,
-            'spread_estimate': (home_rating - away_rating + self.home_advantage) / 25
+            'home_win_prob': home_win_prob,
+            'away_win_prob': 1 - home_win_prob,
+            'spread': spread,
+            'confidence': confidence,
+            'metadata': {
+                'home_elo': home_rating,
+                'away_elo': away_rating,
+                'home_advantage': self.home_advantage
+            }
         }
     
-    def get_biggest_upsets(self, n=10):
-        """Get the N biggest upsets based on pre-game expected win probability."""
-        if not self.history:
-            return pd.DataFrame()
-        
-        upsets = []
-        for game in self.history:
-            # Skip ties
-            if game['home_score'] == game['away_score']:
-                continue
-            
-            # Determine if upset occurred
-            home_won = game['home_score'] > game['away_score']
-            expected_home_win = game['expected_home_win_prob']
-            
-            if home_won and expected_home_win < 0.5:
-                upset_factor = 0.5 - expected_home_win
-                upsets.append({
-                    'week': game['week'],
-                    'winner': game['home_team'],
-                    'loser': game['away_team'],
-                    'score': f"{game['home_score']}-{game['away_score']}",
-                    'upset_factor': upset_factor,
-                    'win_probability': expected_home_win
-                })
-            elif not home_won and expected_home_win > 0.5:
-                upset_factor = expected_home_win - 0.5
-                upsets.append({
-                    'week': game['week'],
-                    'winner': game['away_team'],
-                    'loser': game['home_team'],
-                    'score': f"{game['away_score']}-{game['home_score']}",
-                    'upset_factor': upset_factor,
-                    'win_probability': 1 - expected_home_win
-                })
-        
-        df = pd.DataFrame(upsets)
-        return df.nlargest(n, 'upset_factor') if len(df) > 0 else df
-
-
-if __name__ == "__main__":
-    # Example usage
-    elo = EloRatingSystem(k_factor=20, home_advantage=65)
+    def get_rankings(self) -> pd.DataFrame:
+        """Get current team rankings."""
+        rankings = pd.DataFrame([
+            {'team': team, 'rating': rating}
+            for team, rating in self.ratings.items()
+        ])
+        rankings = rankings.sort_values('rating', ascending=False).reset_index(drop=True)
+        rankings['rank'] = range(1, len(rankings) + 1)
+        return rankings[['rank', 'team', 'rating']]
     
-    # Calculate ratings for 2024 season with DEBUG for Miami
-    elo.calculate_season(2024, save_to_db=True, debug_team='None')
+    def get_state(self) -> Dict:
+        """Get model state for serialization."""
+        return {
+            'ratings': self.ratings,
+            'history': self.history,
+            'config': self.config
+        }
     
-    # Show current rankings
-    print("\n" + "="*50)
-    print("2024 NFL ELO RANKINGS")
-    print("="*50)
-    rankings = elo.get_rankings()
-    print(rankings.to_string(index=False))
-    
-    # Show biggest upsets
-    print("\n" + "="*50)
-    print("BIGGEST UPSETS OF 2024")
-    print("="*50)
-    upsets = elo.get_biggest_upsets(5)
-    if len(upsets) > 0:
-        print(upsets.to_string(index=False))
-    
-    # Example prediction
-    print("\n" + "="*50)
-    print("EXAMPLE PREDICTION: Chiefs vs Bills")
-    print("="*50)
-    prediction = elo.predict_game('KC', 'BUF')
-    print(f"Home: {prediction['home_team']} ({prediction['home_rating']:.1f})")
-    print(f"Away: {prediction['away_team']} ({prediction['away_rating']:.1f})")
-    print(f"Home win probability: {prediction['home_win_probability']:.1%}")
-    print(f"Estimated spread: {prediction['spread_estimate']:.1f}")
+    def load_state(self, state: Dict):
+        """Restore model from saved state."""
+        self.ratings = state['ratings']
+        self.history = state['history']
+        self.is_fitted = True
