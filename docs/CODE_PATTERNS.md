@@ -1,191 +1,396 @@
-# Code Patterns Quick Reference
+# 🏈 NFL Elo Rating System – Code Style & Architecture Guide
 
-## When Creating New Scripts...
+## 0. Notes for AI Agents
 
-### ✅ DO THIS (Integrate with project)
+If you are an AI agent working on code for this project. 
+Hello! Welcome! 
+- When responding to users about code, make sure to always provide complete code files which can be run. Users would prefer to copy and paste complete files, rather than digging to find which lines need to be changed. 
+- Make sure to be clear about what file you are working on. Users think in atomic file units, not complete code projects, so label where files should go in the directory structure. 
 
-```python
-"""scripts/my_new_script.py - Proper integration"""
-from src.models.elo import EloRatingSystem
-from src.database.db_manager import DatabaseManager
-from src.analysis.team_vectors import calculate_team_vectors
+## 1. Overall Philosophy
 
-def main():
-    db = DatabaseManager()  # Uses config/database.py
-    elo = EloRatingSystem()  # Existing class
-    vectors = calculate_team_vectors(2024, through_week=8)
-    # ... your new logic here
+> “Readable, Reproducible, Reusable.”
 
-if __name__ == "__main__":
-    main()
+This project is **research-grade**, not production SaaS — so:
+
+* **Clarity > cleverness.**
+* **Determinism > speed** (unless proven bottleneck).
+* **Reproducibility** is non-negotiable: every experiment must be reproducible from config + code commit.
+
+---
+
+## 2. Project Layout
+
 ```
-
-### ❌ DON'T DO THIS (Standalone duplication)
-
-```python
-"""my_script.py - ANTI-PATTERN"""
-import psycopg2
-
-class EloRatingSystem:  # ❌ Duplicating existing code
-    pass
-
-def get_db_connection():
-    return psycopg2.connect(  # ❌ Not using DatabaseManager
-        database='nfl_ratings',
-        password='hardcoded'  # ❌ Hardcoded credentials
-    )
+nfl-ratings/
+│
+├── src/
+│   ├── models/
+│   │   ├── base.py              # BasePredictor, common interface
+│   │   ├── elo.py               # EloPredictor implementation
+│   │   └── vector_enhanced.py   # VectorEnhancedPredictor
+│   │
+│   ├── analysis/
+│   │   ├── team_vectors.py      # Vector computation (no leakage)
+│   │   └── visualizations.py
+│   │
+│   ├── evaluation/
+│   │   ├── evaluator.py         # ModelEvaluator
+│   │   └── metrics.py           # Metrics registry
+│   │
+│   ├── database/
+│   │   ├── db_manager.py        # SQLite + PostgreSQL utilities
+│   │   └── schema.sql
+│   │
+│   └── utils/
+│       ├── config.py            # YAML loader + overrides + validation
+│       ├── cache.py             # EloCache
+│       └── logging.py
+│
+├── scripts/
+│   ├── predict_game.py
+│   ├── run_full_analysis.py
+│   ├── test_vectors_proper.py
+│   ├── analyze_vectors.py
+│   └── experiments/
+│       └── runner.py            # Experiment runner + overrides
+│
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   ├── plots/
+│   └── experiments/
+│
+├── config/
+│   ├── base.yaml
+│   └── variants/
+│
+├── tests/
+│   ├── test_elo.py
+│   ├── test_vectors.py
+│   └── test_evaluator.py
+│
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## Common Imports
+## 3. Naming Conventions
+
+| Entity Type            | Convention                   | Example                                     |
+| ---------------------- | ---------------------------- | ------------------------------------------- |
+| **Classes**            | `PascalCase`                 | `EloPredictor`, `EloCache`                  |
+| **Functions**          | `snake_case`                 | `calculate_team_vectors`, `apply_overrides` |
+| **Variables**          | `snake_case`                 | `through_week`, `boost_weight`              |
+| **Constants**          | `UPPER_SNAKE_CASE`           | `DEFAULT_HOME_ADVANTAGE`                    |
+| **Modules**            | `lowercase_with_underscores` | `team_vectors.py`                           |
+| **Experiment Configs** | kebab-case YAML filenames    | `vector-boost-0.3.yaml`                     |
+
+---
+
+## 4. Imports
+
+Always use **absolute imports** within `src/`.
+✅ Good:
 
 ```python
-# Elo predictions
-from src.models.elo import EloRatingSystem
+from src.models.elo import EloPredictor
+from src.utils.config import load_config
+```
 
-# Database queries
-from src.database.db_manager import DatabaseManager
+❌ Bad:
 
-# Team vectors
-from src.analysis.team_vectors import (
-    calculate_team_vectors,
-    analyze_matchup
-)
+```python
+from ..models.elo import EloPredictor
+```
 
-# Data loading
-from src.ingestion.nfl_data import NFLDataIngestion
+**Import order:**
 
-# Visualizations
-from src.analysis.visualizations import (
-    plot_elo_history,
-    plot_team_comparison
-)
+1. Standard library
+2. Third-party libraries
+3. Internal modules (grouped by layer)
+
+Example:
+
+```python
+import os
+import json
+from typing import List, Dict
+
+import pandas as pd
+import yaml
+
+from src.models.elo import EloPredictor
+from src.utils.cache import EloCache
 ```
 
 ---
 
-## Checklist for New Scripts
+## 5. Docstrings & Comments
 
-- [ ] Imports from `src/` modules (not standalone)
-- [ ] Uses `DatabaseManager` (not raw psycopg2)
-- [ ] No hardcoded credentials
-- [ ] Follows `scripts/` naming convention
-- [ ] Includes docstring explaining purpose
-- [ ] Uses `through_week` parameter if calculating vectors in-season
-- [ ] Saves output to `data/processed/` or `data/plots/`
+Use **Google-style docstrings**.
+Include **Args**, **Returns**, and **Example** if applicable.
+
+```python
+def calculate_team_vectors(plays: pd.DataFrame, through_week: int) -> pd.DataFrame:
+    """Compute team offensive/defensive vectors through a given week.
+
+    Args:
+        plays: Play-by-play DataFrame from nflverse.
+        through_week: Last week to include (inclusive).
+
+    Returns:
+        A DataFrame with per-team aggregated metrics.
+    """
+```
+
+* Use comments **only for intent**, not mechanics.
+* Prefer **short, meaningful names** over comments explaining trivial code.
 
 ---
 
-## Common Patterns
+## 6. Configuration Style
 
-### Making Predictions
-```python
-elo = EloRatingSystem(k_factor=20, home_advantage=40)
-elo.calculate_season(2024, through_week=8)
-pred = elo.predict_game('KC', 'BUF')
-print(f"KC: {pred['home_win_probability']:.1%}")
+### 6.1 YAML Structure
+
+Each YAML file should have:
+
+```yaml
+name: "elo_baseline_2025"
+model_type: "elo"
+parameters:
+  k_factor: 20
+  home_advantage: 40
+  regress_to: 1500
+metrics: [accuracy, brier_score]
+data:
+  seasons: [2024, 2025]
+  through_week: 9
+output:
+  save_predictions: true
 ```
 
-### Querying Database
+### 6.2 Command-Line Overrides
+
+* Always support `--override key=value`.
+* Override keys can use dot-notation: `elo.k_factor=25`.
+* Values must infer type via `yaml.safe_load`.
+
+### 6.3 Validation
+
+* Each config must be validated by `validate_config(config)` before use.
+* Raise `ValueError` with clear, human-readable messages.
+
+---
+
+## 7. Logging & Output
+
+Use the built-in `logging` module:
+
 ```python
-db = DatabaseManager()
-query = "SELECT * FROM games WHERE season = %s"
-games = db.query_to_dataframe(query, params=(2024,))
+import logging
+logger = logging.getLogger(__name__)
+
+logger.info("Training Elo model for %s", season)
+logger.debug("Elo update: %s vs %s, delta=%f", home, away, delta)
 ```
 
-### Calculating Vectors
+### Logging Rules
+
+* INFO: workflow milestones (loading, training, evaluation)
+* DEBUG: internal states, values, calculations
+* WARNING: recoverable issues (missing data, cache miss)
+* ERROR: fatal errors
+
+All logs should be timestamped and written to both console and file (`logs/experiment_<id>.log`).
+
+---
+
+## 8. Data Handling
+
+### General Rules
+
+* **Never mutate input DataFrames in place.**
+* **Always copy** before transforming:
+
+  ```python
+  df = df.copy()
+  ```
+* Always label derived columns with clear names:
+
+  * ✅ `elo_pre`, `elo_post`, `predicted_prob`
+  * ❌ `x1`, `tmp`, `prob1`
+
+### Vector Calculations
+
+* Must respect `through_week` to avoid leakage.
+* Document which columns are required inputs and which are derived.
+
+---
+
+## 9. Experiment Tracking
+
+### SQLite Schema
+
+* `experiments` table → metadata (name, date, config hash, summary metrics)
+* `results` table → per-experiment aggregates
+* `predictions` table → optional link to CSV path
+
+### Naming
+
+* Experiments should be timestamped:
+
+  ```
+  experiments/results/2025-11-02T13-30-elo_baseline.csv
+  ```
+* Every run gets an **experiment ID** (auto-increment).
+
+---
+
+## 10. Performance & Caching
+
+### Caching Rules
+
+* EloCache keyed by `(season, week, config_hash)`
+* Only cache **finalized weekly states**, not partial updates
+* Do not cache vector calculations unless reproducible deterministically
+
+---
+
+## 11. Testing & Validation
+
+Use `pytest` with the following conventions:
+
+* Unit tests for:
+
+  * Elo rating updates (`test_elo.py`)
+  * Vector calculations (`test_vectors.py`)
+  * Metrics correctness (`test_metrics.py`)
+* Integration tests for:
+
+  * Full prediction flow
+  * Experiment logging and retrieval
+
+**Naming:**
+`test_<module>.py` → test file
+`test_<function>_<condition>()` → individual tests
+
+Example:
+
 ```python
-# Full season (for analysis)
-vectors = calculate_team_vectors(2024)
-
-# Through specific week (for predictions)
-vectors = calculate_team_vectors(2024, through_week=8)
-
-# Matchup analysis
-matchup = analyze_matchup('KC', 'BUF', vectors)
-```
-
-### Loading Data
-```python
-ingestion = NFLDataIngestion()
-ingestion.fetch_schedule([2024, 2025])
-ingestion.fetch_play_by_play([2024])
+def test_elo_update_increases_winner_rating():
+    ...
 ```
 
 ---
 
-## Red Flags 🚩
+## 12. Code Quality Rules
 
-If you see these in new code, it's wrong:
-
-- `class EloRatingSystem:` in a script (should import it)
-- `psycopg2.connect()` anywhere (should use DatabaseManager)
-- `password='...'` in code (should use config)
-- Calculating vectors without `through_week` for in-season predictions
-- Scripts not importing from `src/`
-
----
-
-## File Locations
-
-**Scripts:** `scripts/*.py`
-- Import from `src/`
-- User-facing commands
-- Can be run with `python -m scripts.script_name`
-
-**Source Code:** `src/`
-- Core functionality
-- Reusable modules
-- Never run directly
-
-**Results:** `data/`
-- `data/processed/*.csv` - Analysis results
-- `data/plots/*.png` - Visualizations
-- `data/raw/` - Raw data (usually empty, data comes from nflreadpy)
-
-**Config:** `config/database.py`
-- Database credentials (never hardcode!)
-- Read via DatabaseManager
+| Rule                                       | Example                                            |
+| ------------------------------------------ | -------------------------------------------------- |
+| ✅ **Type hints everywhere**                | `def predict(self, home: str, away: str) -> dict:` |
+| ✅ Limit functions to ≤ 40 lines            | Split complex logic                                |
+| ✅ Prefer composition over inheritance      | VectorEnhancedPredictor uses EloPredictor instance |
+| ✅ Use constants for repeated magic numbers | `HOME_ADVANTAGE_DEFAULT = 40`                      |
+| ❌ No hard-coded paths                      | Use `Path` from `pathlib`                          |
+| ❌ No global variables                      | Config + arguments only                            |
+| ❌ No print()                               | Always use `logger`                                |
 
 ---
 
-## When User Says "Help me predict this week's games"
+## 13. Code Style Enforcement
 
-```python
-# ✅ Create: scripts/predict_week.py
-from src.models.elo import EloRatingSystem
-from src.database.db_manager import DatabaseManager
+Use:
 
-def predict_week(season, week):
-    elo = EloRatingSystem()
-    elo.calculate_season(season, through_week=week-1)
-    
-    db = DatabaseManager()
-    games = db.query_to_dataframe(
-        "SELECT * FROM games WHERE season=%s AND week=%s",
-        params=(season, week)
-    )
-    
-    for _, game in games.iterrows():
-        pred = elo.predict_game(game['home_team'], game['away_team'])
-        print(f"{game['away_team']} @ {game['home_team']}: {pred['home_win_probability']:.1%}")
+* **Black** (`line-length=100`)
+* **isort** for import sorting
+* **Flake8** for linting
+* **mypy** for static type checks
 
-# ❌ DON'T create standalone script with embedded Elo class
+Example `pyproject.toml` snippet:
+
+```toml
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+
+[tool.isort]
+profile = "black"
+
+[tool.flake8]
+max-line-length = 100
+ignore = ["E203", "W503"]
+
+[tool.mypy]
+ignore_missing_imports = true
 ```
 
 ---
 
-## Remember
+## 14. Documentation Style
 
-**The project already has:**
-- Elo system (`src/models/elo.py`)
-- Database interface (`src/database/db_manager.py`)
-- Vector calculations (`src/analysis/team_vectors.py`)
-- Data loading (`src/ingestion/nfl_data.py`)
+Each module (`.py` file) should start with a **1–3 line docstring**:
 
-**Your job is to:**
-- Use these existing components
-- Add new scripts that import from them
-- Never duplicate functionality
-- Follow the established patterns
+```python
+"""
+Elo rating model for NFL game predictions.
+
+Implements an EloPredictor class compatible with BasePredictor interface.
+Supports caching via EloCache.
+"""
+```
+
+Every class should have a short summary docstring explaining its role and relationships to other modules.
+
+---
+
+## 15. Example Commit Messages
+
+Use **Conventional Commits** style:
+
+| Type        | Purpose               | Example                                                  |
+| ----------- | --------------------- | -------------------------------------------------------- |
+| `feat:`     | New feature           | `feat: add EloCache for faster week-by-week evaluations` |
+| `fix:`      | Bug fix               | `fix: prevent through_week leakage in vector calc`       |
+| `refactor:` | Internal change       | `refactor: move config parsing to utils/config.py`       |
+| `test:`     | Add or improve tests  | `test: add calibration error validation test`            |
+| `docs:`     | Documentation updates | `docs: update README with experiment runner usage`       |
+
+---
+
+## 16. Example Code Snippet (Putting It Together)
+
+```python
+from src.models.base import BasePredictor
+from src.utils.cache import EloCache
+from src.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+class EloPredictor(BasePredictor):
+    """Elo rating predictor for NFL games."""
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.k_factor = config.get("k_factor", 20)
+        self.home_advantage = config.get("home_advantage", 40)
+        self.ratings = {}
+        self.cache = EloCache()
+
+    def fit(self, season: int, through_week: int = None):
+        """Fit Elo ratings for a season up to a given week."""
+        cached = self.cache.get(season, through_week, self.config)
+        if cached:
+            logger.info(f"Loaded Elo cache for season {season}, week {through_week}")
+            self.ratings = cached
+            return self
+        # Compute Elo ratings ...
+        self.cache.save(season, through_week, self.config, self.ratings)
+        return self
+
+    def predict(self, home_team: str, away_team: str) -> dict:
+        """Predict win probability using current Elo ratings."""
+        # compute win probability...
+        return {"home_prob": 0.63}
+```
