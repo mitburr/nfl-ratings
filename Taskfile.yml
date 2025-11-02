@@ -1,0 +1,78 @@
+version: '3'
+
+vars:
+  K_FACTOR: 20
+  HOME_ADV: 40
+
+tasks:
+  # Data loading tasks
+  load:
+    desc: "Load historical NFL data (usage: task load -- 2022 2024)"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.load_historical_data {{.CLI_ARGS}}"
+
+  load-current:
+    desc: "Load current season (2025)"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.load_historical_data 2025"
+
+  # Analysis tasks
+  analyze:
+    desc: "Run full analysis for a season (usage: task analyze -- 2024 or just task analyze)"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.run_full_analysis --season {{.CLI_ARGS | default "2025"}} --k {{.K_FACTOR}} --home {{.HOME_ADV}}"
+
+  # Tuning tasks
+  tune:
+    desc: "Tune parameters using historical data"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.tune_parameters"
+
+  # Visualization tasks
+  visualize:
+    desc: "Generate visualizations (usage: task visualize -- 2024)"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.visualize --season {{.CLI_ARGS | default "2025"}} --k {{.K_FACTOR}} --home {{.HOME_ADV}}"
+
+  # Prediction tasks
+  predict:
+    desc: "Predict game outcome (usage: task predict MIN DET)"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.predict_game --predict {{.CLI_ARGS}}"
+
+  predict-interactive:
+    desc: "Interactive prediction mode"
+    aliases: [predict-i]
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.predict_game --interactive"
+
+  rankings:
+    desc: "Show current rankings"
+    cmds:
+      - bash -c "cd ~/Repos/nfl-ratings && source venv/bin/activate && python -m scripts.predict_game --rankings"
+
+  # Database tasks
+  db-check:
+    desc: "Check database connection and game counts"
+    cmds:
+      - psql -U postgres -d nfl_stats -c "SELECT season, COUNT(*) as games FROM games GROUP BY season ORDER BY season;"
+
+  # Utility tasks
+  clean:
+    desc: "Clean generated files"
+    cmds:
+      - rm -rf ~/Repos/nfl-ratings/data/plots/*.png
+      - rm -rf ~/Repos/nfl-ratings/data/processed/*.csv
+      - rm -rf ~/Repos/nfl-ratings/data/processed/*.txt
+      - echo "Cleaned generated files"
+
+  help:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+
+  today:
+    desc: "Predict today's games and show rankings"
+    cmds:
+      - task: rankings
+      - task: predict-interactive

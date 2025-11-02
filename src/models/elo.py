@@ -168,36 +168,30 @@ class EloRatingSystem:
         
         return game_info
     
-    def calculate_season(self, season, save_to_db=True, debug_team=None):
+    def calculate_season(self, season, through_week=None, save_to_db=True, debug_team=None):
         """
-        Calculate Elo ratings for an entire season.
-        
-        Args:
-            season: Year to calculate (e.g., 2024)
-            save_to_db: Whether to save ratings to database
-            debug_team: Team code to trace (e.g., 'MIA')
+        Calculate Elo ratings for a season, optionally through a specific week.
         """
         print(f"Calculating Elo ratings for {season} season...")
-        if debug_team:
-            print(f"DEBUG MODE: Tracing {debug_team}")
-        
-        # Load games from database
+        if through_week:
+            print(f"Limiting to games through Week {through_week}")
+
         query = """
             SELECT game_id, season, week, game_date,
-                   home_team, away_team, home_score, away_score
+                home_team, away_team, home_score, away_score
             FROM games
             WHERE season = %s AND home_score IS NOT NULL
+            {}
             ORDER BY week, game_date
-        """
-        games = self.db.query_to_dataframe(query, params=(season,))
+        """.format("AND week <= %s" if through_week else "")
+
+        params = (season, through_week) if through_week else (season,)
+        games = self.db.query_to_dataframe(query, params=params)
         
         if len(games) == 0:
-            print(f"No completed games found for {season}")
+            print(f"No completed games found for {season} (through_week={through_week})")
             return
-        
-        print(f"Processing {len(games)} games...")
-        
-        # Process each game
+
         for _, game in games.iterrows():
             self.update_ratings(
                 game['home_team'],
@@ -210,12 +204,12 @@ class EloRatingSystem:
                 debug_team=debug_team
             )
         
-        # Save to database if requested
         if save_to_db:
             self.save_ratings_to_db(season)
-        
-        print(f"✓ Processed {len(games)} games")
+
+        print(f"✓ Processed {len(games)} games (through_week={through_week})")
         print(f"✓ Rated {len(self.ratings)} teams")
+
     
     def save_ratings_to_db(self, season):
         """Save current ratings to database."""

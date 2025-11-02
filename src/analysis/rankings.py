@@ -4,17 +4,20 @@ from src.models.elo import EloRatingSystem
 from src.database.db_manager import DatabaseManager
 
 
-def compare_elo_to_records(season=2024):
-    """Compare Elo rankings to actual win-loss records."""
+def compare_elo_to_records(season=2024, through_week=None):
+    """Compare Elo rankings (up to given week) to actual win-loss records."""
     db = DatabaseManager()
     elo = EloRatingSystem()
     
-    # Calculate Elo ratings
-    elo.calculate_season(season, save_to_db=False)
+    # Calculate Elo up to given week
+    elo.calculate_season(season, through_week=through_week, save_to_db=False)
     elo_rankings = elo.get_rankings()
     
-    # Get actual records
-    query = """
+    # Get records up to the same week
+    week_filter = "AND g.week <= %s" if through_week else ""
+    params = (season, through_week, season, through_week) if through_week else (season, season)
+    
+    query = f"""
         SELECT 
             team,
             SUM(wins) as wins,
@@ -25,8 +28,8 @@ def compare_elo_to_records(season=2024):
                 home_team as team,
                 CASE WHEN home_score > away_score THEN 1 ELSE 0 END as wins,
                 CASE WHEN home_score < away_score THEN 1 ELSE 0 END as losses
-            FROM games
-            WHERE season = %s AND home_score IS NOT NULL
+            FROM games g
+            WHERE g.season = %s {week_filter} AND g.home_score IS NOT NULL
             
             UNION ALL
             
@@ -34,33 +37,24 @@ def compare_elo_to_records(season=2024):
                 away_team as team,
                 CASE WHEN away_score > home_score THEN 1 ELSE 0 END as wins,
                 CASE WHEN away_score < home_score THEN 1 ELSE 0 END as losses
-            FROM games
-            WHERE season = %s AND home_score IS NOT NULL
+            FROM games g
+            WHERE g.season = %s {week_filter} AND g.home_score IS NOT NULL
         ) combined
         GROUP BY team
         ORDER BY win_pct DESC, wins DESC
     """
     
-    records = db.query_to_dataframe(query, params=(season, season))
+    records = db.query_to_dataframe(query, params=params)
     
-    # Merge Elo and records
-    comparison = elo_rankings.merge(
-        records, 
-        left_on='team', 
-        right_on='team',
-        how='left'
-    )
-    
-    # Calculate rank differences
+    # Merge
+    comparison = elo_rankings.merge(records, on='team', how='left')
     comparison['record_rank'] = comparison['win_pct'].rank(ascending=False, method='min')
     comparison['rank_diff'] = comparison['record_rank'] - comparison['rank']
+    comparison['record'] = (
+        comparison['wins'].astype(int).astype(str) + '-' + comparison['losses'].astype(int).astype(str)
+    )
     
-    # Format for display
-    comparison['record'] = comparison['wins'].astype(int).astype(str) + '-' + comparison['losses'].astype(int).astype(str)
-    
-    return comparison[[
-        'rank', 'team', 'rating', 'record', 'win_pct', 'record_rank', 'rank_diff'
-    ]].sort_values('rank')
+    return comparison[['rank', 'team', 'rating', 'record', 'win_pct', 'record_rank', 'rank_diff']].sort_values('rank')
 
 
 def find_most_overrated_underrated(season=2024):
